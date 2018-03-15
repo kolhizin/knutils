@@ -178,7 +178,7 @@ class TagClassifier:
     
     def id2tag(self, idx):
         if idx is None:
-            return 'NULL'
+            return 'null'
         if idx == -1 and self.__use_other:
             return 'other'
         return self.__id2tag[idx] if idx in self.__id2tag else None
@@ -560,6 +560,61 @@ class Scraper:
             stats = self.get_stats(sample)
         return [sample[i] for (i,z) in enumerate(stats) if z.single(default=False)]
 
+class ScraperNode:
+    def __init__(self, name, elem, subvals):
+        self.__name = name
+        self.__elem = elem
+        self.__subvals = {}
+        if subvals is not None and type(subvals) is dict:
+            self.__subvals = subvals
+        elif subvals is not None and type(subvals) is list and len(subvals) > 0:
+            vn = set(v.name() for v in subvals)
+            self.__subvals = {k: [v for v in subvals if v.name()==k] for k in vn}
+        
+    def __repr__(self):
+        if self.is_final():
+            return '{0}({1})'.format(self.__name, self.__elem)
+        return '{0}({1}) with {2}'.format(self.__name, self.__elem, self.get_all())
+        
+    def renamed(self, name):
+        return ScraperNode(name, self.__elem, self.__subvals)
+        
+    def is_final(self):
+        return len(self.__subvals) == 0
+    
+    def get_num(self, subname):
+        if subname not in self.__subvals:
+            return 0
+        return len(self.__subvals[subname])
+    
+    def get_list(self, subname):
+        if subname not in self.__subvals:
+            return []
+        return self.__subvals[subname]
+    
+    def get(self, subname):
+        if subname not in self.__subvals:
+            return None
+        res = self.__subvals[subname]
+        if len(res) == 0:
+            return None
+        if len(res) == 1:
+            return res[0]
+        return res
+    
+    def get_all(self):
+        return [x for (k, v) in self.__subvals.items() for x in v]
+    
+    def __getitem__(self, subname):
+        return self.get(subname)
+    
+    def elem(self):
+        return self.__elem
+        
+    def name(self):
+        return self.__name
+
+    
 class AutoScraper:
     def __init__(self, dict_classifiers):
         self.__classifiers = dict_classifiers
@@ -633,6 +688,21 @@ class AutoScraper:
                 targets.append(z in y)
             return self.fit_on_sample(sample, targets, max_depth, order_function)
         return self.fit_on_sample(x, y, max_depth, order_function)
+    
+    def transform_into_tree(data):
+        """
+        Transforms list of form [(node, meta),(node, meta)] into list of lists
+        """
+        lev = [(x, meta, x) for (x, meta) in data]
+        while True:
+            nlev = [(x, meta, (z.getparent() if z is not None else None)) for (x, meta, z) in lev]
+            
+            
+            lev = nlev
+            if len([z for (_,_,z) in lev if z is not None]) == 0:
+                break
+                     
+            
         
     def raw_stats(doc_tree):
         tag_stat = []
@@ -696,3 +766,93 @@ class AutoScraper:
             if p is None:
                 return None
         return p
+    
+class MultiScraper:
+    def __init__(self, dict_scrapers, dict_structure):
+        self.__scrapers = dict_scrapers
+        self.__strdef = dict_structure
+        
+    def parse(self, x):
+        res0 = [(z, k) for (k,v) in self.__scrapers.items() for z in v.select(x)]
+        res1 = MultiScraper.induce_hierarchy(res0)
+        res = MultiScraper.induce_structure(res1, self.__strdef)
+        return res
+    
+    def parse_(self, x):
+        res0 = [(z, k) for (k,v) in self.__scrapers.items() for z in v.select(x)]
+        print(len(res0))
+        res = MultiScraper.induce_hierarchy(res0)
+        return res
+    
+    def get_full_path(x):
+        res = []
+        p = x
+        while p is not None:
+            res.append(p)
+            p = p.getparent()
+        return res
+    
+    def induce_hierarchy_step(lst):
+        r = [(p[-1] if len(p)>0 else None) for (_,_,p) in lst] #get last parents
+        s = set(r) #get unique, but ruins order
+        sd = {k:min([i for (i,(_,_,p)) in enumerate(lst) if (p[-1] if len(p)>0 else None)==k]) for k in s} #get first position
+        sl = [x for (x,_) in sorted(sd.items(), key=lambda x: x[1])] #restore order
+
+        if len(s) == 1:
+            #either final node or pass-through
+            if None in s:
+                assert(len(lst) == 1)
+                return (lst[0][0],lst[0][1],[]) #final
+            return MultiScraper.induce_hierarchy_step([(x,m,p[:-1]) for (x,m,p) in lst]) #pass-through
+        if None in s:
+            print('hit none in MultiScraper.induce_hierarchy_step - check adequacy')
+            #check that num of None is exactly 1
+            xs = [(x,m) for (x,m,p) in lst if len(p)==0]
+            assert(len(xs)==1)
+            (x0, m0) = xs[0]
+            res = [MultiScraper.induce_hierarchy_step([(x,m,p[:-1]) for (x,m,p) in lst if len(p)>0 and p[-1]==v])
+                   for v in [x for x in sl if x is not None]]
+            return (x0, m0, res) 
+        #standard branch
+        res = [MultiScraper.induce_hierarchy_step([(x,m,p[:-1]) for (x,m,p) in lst if p[-1]==v]) for v in sl]
+        #print('\nres=',res)
+        #print(lst[0])
+        return (lst[0][2][-1].getparent(), None, res)
+
+
+    def induce_hierarchy(lst):
+        #all nodes shall be distinct
+        lev = [(x, d, MultiScraper.get_full_path(x)) for (x,d) in lst]
+        return MultiScraper.induce_hierarchy_step(lev)
+    
+    def check_substructure(lst, structure_descr):
+        actual = dict(Counter([v.name() for v in lst]))
+        #print('test: ', actual, structure_descr)
+        if None in actual:
+            return False
+        if 'other' in structure_descr:
+            actual_other = sum([v for (k,v) in actual.items() if k not in structure_descr])
+            constr_other = structure_descr['other']
+            if actual_other < constr_other[0] or (len(constr_other) > 1 and actual_other > constr_other[1]):
+                return False
+        res1 = [(k in actual and actual[k] >= v[0] and (len(v) == 1 or actual[k] <= v[1]))
+                    for (k,v) in structure_descr.items() if k != 'other' and v[0] > 0]
+        res2 = [(len(v) == 1 or actual[k] <= v[1]) for (k,v) in structure_descr.items() if k != 'other' and v[0] == 0 and k in actual]
+        return all(res1) and all(res2)
+
+    def induce_structure(node, struct_transform):
+        if node[2] == []:
+            return ScraperNode(node[1], node[0], [])
+        res = [MultiScraper.induce_structure(n, struct_transform) for n in node[2]]
+        strhit = [t for (d, t) in struct_transform if MultiScraper.check_substructure(res, d)]
+        if len(strhit) > 1:
+            raise 'Multiple structures matched!'
+        fin = ScraperNode(None, node[0], res)
+        if len(strhit) == 1:
+            transform = strhit[0]
+            if type(transform) is str:
+                fin = fin.renamed(transform)
+            else:
+                #print('applying transform', strhit[0])
+                fin = strhit[0](fin)
+        return fin
