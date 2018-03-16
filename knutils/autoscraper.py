@@ -687,7 +687,12 @@ class AutoScraper:
                 sample.append(z)
                 targets.append(z in y)
             return self.fit_on_sample(sample, targets, max_depth, order_function)
-        return self.fit_on_sample(x, y, max_depth, order_function)
+        if len(x) != len(y) and len(y) > 0 and type(y[0]) is html.HtmlElement:
+            targets = [(z in y) for z in x]
+            return self.fit_on_sample(x, targets, max_depth, order_function)
+        if len(x) == len(y) and type(y[0]) is int:
+            return self.fit_on_sample(x, y, max_depth, order_function)
+        raise Exception('Unsupported (x, y) combination')
     
     def transform_into_tree(data):
         """
