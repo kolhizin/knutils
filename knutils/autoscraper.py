@@ -163,6 +163,7 @@ class AttribSplit:
             return None
         return (self.__idx in features)
 
+
 class TagClassifier:
     def __init__(self, used_tags, use_other=True):
         self.__tag2id = {x:i for (i, x) in enumerate(used_tags)}
@@ -238,6 +239,41 @@ class AttribClassifier:
         values = list(range(len(self.__akv2id)))
         return [AttribSplit(v, self.__id2akv[v][0], self.__id2akv[v][1]) for v in values]
 
+class AttribContentClassifier:
+    def __init__(self, used_attrib_keyvalues):
+        self.__akv2id = {p:i for (i, p) in enumerate(used_attrib_keyvalues)}
+        self.__id2akv = {i:p for (i, p) in enumerate(used_attrib_keyvalues)}
+        self.__attrib = set(k for (k, v) in used_attrib_keyvalues)
+        
+    def akv2id(self, akv):
+        return self.__akv2id[akv] if akv in self.__akv2id else None
+    
+    def id2akv(self, idx):
+        return self.__id2akv[idx] if idx in self.__id2akv else None
+    
+    def get_features(self, sample):
+        if type(sample) is list:
+            return [self.get_features(z) for z in sample]
+        if type(sample) is tuple:
+            return (self.get_features(z) for z in sample)
+        
+        kvids = []
+        if sample is None:
+            return kvids
+        for (k, v) in sample.attrib.items():
+            kvids += [idx for ((ak, av), idx) in self.__akv2id.items() if ak==k and av in v]
+        return list(set(kvids))
+    
+    def get_features_on_splits(self, sample, splits):
+        if splits is None or splits == []:
+            return None
+        return self.get_features(sample)
+    
+    def get_splits(self):
+        values = list(range(len(self.__akv2id)))
+        return [AttribSplit(v, self.__id2akv[v][0], self.__id2akv[v][1]) for v in values]
+
+    
 class IdxSplit:
     def __init__(self, base_split, idx):
         self.__base = base_split
