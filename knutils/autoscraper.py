@@ -363,6 +363,72 @@ class ContextClassifier:
     def get_splits(self):
         bs = self.__base.get_splits()
         return [ContextSplit(b, i, name) for (i, (name,_)) in enumerate(self.__ctxt) for b in bs]
+    
+    def get_child(x, idx):
+        if x is None:
+            return None
+        cs = x.getchildren()
+        if cs is None or len(cs) == 0:
+            return None
+        if idx >= 0:
+            if idx < len(cs):
+                return cs[idx]
+        else:
+            if -idx-1 < len(cs):
+                return cs[idx]
+        return None
+
+    def get_sibling(x, idx):
+        if x is None:
+            return None
+        p = x
+        i = idx
+        while i != 0:
+            if i > 0:
+                i-=1
+                p = p.getnext()
+            else:
+                i+=1
+                p = p.getprevious()
+            if p is None:
+                return None
+        return p
+    
+    def context_cur(p):
+        return p
+    
+    def context_next(p):
+        return ContextClassifier.get_sibling(p, +1)
+    
+    def context_prev(p):
+        return ContextClassifier.get_sibling(p, -1)
+    
+    def context_child0(p):
+        return ContextClassifier.get_child(p, 0)
+    
+    def context_child1(p):
+        return ContextClassifier.get_child(p, 1)
+    
+    def context_child2(p):
+        return ContextClassifier.get_child(p, 2)
+    
+    def get_standard_context_fn(context):
+        if type(context) is list:
+            return [(name, ContextClassifier.get_standard_context_fn(name)) for name in context]
+        if name == 'cur':
+            return ContextClassifier.context_cur
+        elif name == 'prev':
+            return ContextClassifier.context_prev
+        elif name == 'next':
+            return ContextClassifier.context_next
+        elif name == 'child' or name == 'child0':
+            return ContextClassifier.context_child0
+        elif name == 'child1':
+            return ContextClassifier.context_child1
+        elif name == 'child2':
+            return ContextClassifier.context_child2
+        return None
+    
 
 class ParentAbsClassifier:
     def __init__(self, base_classifier, max_depth):
@@ -614,6 +680,9 @@ class ScraperNode:
         
     def renamed(self, name):
         return ScraperNode(name, self.__elem, self.__subvals)
+    
+    def rename(self, name):
+        self.__name = name
         
     def is_final(self):
         return len(self.__subvals) == 0
@@ -777,36 +846,6 @@ class AutoScraper:
         attrkv_info = {k:list(sorted(dict(Counter(v)).items(), key=lambda x: x[1], reverse=True))
                        for (k, v) in attrv_stat.items()}
         return depth_info, tag_info, attrk_info, attrv_info, attrkv_info
-
-    def get_child(x, idx):
-        if x is None:
-            return None
-        cs = x.getchildren()
-        if cs is None or len(cs) == 0:
-            return None
-        if idx >= 0:
-            if idx < len(cs):
-                return cs[idx]
-        else:
-            if -idx-1 < len(cs):
-                return cs[idx]
-        return None
-
-    def get_sibling(x, idx):
-        if x is None:
-            return None
-        p = x
-        i = idx
-        while i != 0:
-            if i > 0:
-                i-=1
-                p = p.getnext()
-            else:
-                i+=1
-                p = p.getprevious()
-            if p is None:
-                return None
-        return p
     
 class MultiScraper:
     def __init__(self, dict_scrapers, dict_structure):
@@ -821,7 +860,7 @@ class MultiScraper:
     
     def parse_(self, x):
         res0 = [(z, k) for (k,v) in self.__scrapers.items() for z in v.select(x)]
-        print(len(res0))
+        #print(len(res0))
         res = MultiScraper.induce_hierarchy(res0)
         return res
     
