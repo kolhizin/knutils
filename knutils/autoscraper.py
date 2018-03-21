@@ -415,17 +415,17 @@ class ContextClassifier:
     def get_standard_context_fn(context):
         if type(context) is list:
             return [(name, ContextClassifier.get_standard_context_fn(name)) for name in context]
-        if name == 'cur':
+        if context == 'cur':
             return ContextClassifier.context_cur
-        elif name == 'prev':
+        elif context == 'prev':
             return ContextClassifier.context_prev
-        elif name == 'next':
+        elif context == 'next':
             return ContextClassifier.context_next
-        elif name == 'child' or name == 'child0':
+        elif context == 'child' or context == 'child0':
             return ContextClassifier.context_child0
-        elif name == 'child1':
+        elif context == 'child1':
             return ContextClassifier.context_child1
-        elif name == 'child2':
+        elif context == 'child2':
             return ContextClassifier.context_child2
         return None
     
@@ -905,34 +905,132 @@ class MultiScraper:
         lev = [(x, d, MultiScraper.get_full_path(x)) for (x,d) in lst]
         return MultiScraper.induce_hierarchy_step(lev)
     
-    def check_substructure(lst, structure_descr):
-        actual = dict(Counter([v.name() for v in lst]))
-        #print('test: ', actual, structure_descr)
-        if None in actual:
-            return False
-        if 'other' in structure_descr:
-            actual_other = sum([v for (k,v) in actual.items() if k not in structure_descr])
-            constr_other = structure_descr['other']
-            if actual_other < constr_other[0] or (len(constr_other) > 1 and actual_other > constr_other[1]):
-                return False
-        res1 = [(k in actual and actual[k] >= v[0] and (len(v) == 1 or actual[k] <= v[1]))
-                    for (k,v) in structure_descr.items() if k != 'other' and v[0] > 0]
-        res2 = [(len(v) == 1 or actual[k] <= v[1]) for (k,v) in structure_descr.items() if k != 'other' and v[0] == 0 and k in actual]
-        return all(res1) and all(res2)
+    #induce-structure 1 step: is go from down up -- setup ScraperNodes instead of tuples
+    def restructure_data(node):
+        return ScraperNode(node[1], node[0], [MultiScraper.restructure_data(n) for n in node[2]])
 
-    def induce_structure(node, struct_transform):
-        if node[2] == []:
-            return ScraperNode(node[1], node[0], [])
-        res = [MultiScraper.induce_structure(n, struct_transform) for n in node[2]]
-        strhit = [t for (d, t) in struct_transform if MultiScraper.check_substructure(res, d)]
-        if len(strhit) > 1:
-            raise 'Multiple structures matched!'
-        fin = ScraperNode(None, node[0], res)
-        if len(strhit) == 1:
-            transform = strhit[0]
-            if type(transform) is str:
-                fin = fin.renamed(transform)
-            else:
-                #print('applying transform', strhit[0])
-                fin = strhit[0](fin)
-        return fin
+    
+    #incude-structure helper step A: check option in structure defintion
+    def check_strdef_option(strdef, option):
+        if option == '$match_recursive':
+            res = True
+            if '$match_recursive' in strdef:
+                if type(strdef['$match_recursive']) is bool:
+                    return strdef['$match_recursive']
+            return res
+        return None 
+    
+    #induce-structure helper step B: gather all named nodes through all sub-hierarchy
+    def gather_substructure(node):
+        subnodes = sum([MultiScraper.gather_substructure(x) for x in node.get_list(None)],[])
+        return subnodes + [x for x in node.get_all() if x.name() is not None]
+
+    #induce-structure helper step C: match actual and target structures
+    def match_substructure(act_str, trg_str):
+        c1 = [(act_str[k] >= v[0]) and (len(v) == 1 or act_str[k] <= v[1]) for (k, v) in trg_str.items() if k in act_str]
+        c2 = [v[0] == 0 for (k, v) in trg_str.items() if k not in act_str]
+        c3 = [k for k in act_str if k not in trg_str]
+        return all(c1) and all(c2) and (len(c3) == 0)
+
+    #induce-structure helper step D: select matching definition for node, no recursion for subnodes
+    def select_structure(node, str_def):
+        #Part 1: immediate children structure
+        act_lst = MultiScraper.gather_substructure(node)
+        act_str = dict(Counter([x.name() for x in act_lst]))
+        #print(act_str)
+        res = [k for (k, x) in str_def.items() if MultiScraper.match_substructure(act_str, x)]
+        
+        #if several matches return no matches
+        if len(res) > 1:
+            return None, None
+        #if single match use it
+        if len(res) == 1:
+            return res[0], act_lst
+
+        #if no match, proceed with subnodes of children in special way:
+        #  doc:{url:(0,), cmt(0,)} will match be very greedy and for the following structure (root, [url, url, (None, [cmt, cmt])]
+        #  will produce incorrect results, hence $match_recursive keyword (default=True) tries to pass children of doc into definition:
+        #  (root, [url, url, (None, [cmt, cmt])]) -> (root, [url, url, (doc, [cmt, cmt])]) -> (doc, [url, url, cmt, cmt])
+        for (k, sdef) in str_def.items():
+            if not MultiScraper.check_strdef_option(sdef, '$match_recursive'):
+                continue
+
+            act_lst_rec = sum([MultiScraper.gather_substructure(x) for x in act_lst if x.name() == k],
+                              [x for x in act_lst if x.name() != k])
+            act_str_rec = dict(Counter([x.name() for x in act_lst_rec]))
+            #print('rec:', k, act_str_rec)
+            if MultiScraper.match_substructure(act_str_rec, sdef):
+                #print('matched')
+                res.append((k, act_lst_rec))
+
+        #if several matches or none return no matches
+        if len(res) != 1:
+            return None, None
+        return res[0] #tuple
+
+    #induce-structure step 2: iterate in-depth (first down than up) tree and try apply selected structure
+    #returns node and number of changes made
+    def apply_structure_downup(node, str_def):
+        #for final node with name return itself
+        if node.is_final() and node.name() is not None:
+            return (node, 0)
+
+        #recursively apply for children first
+        res0 = [MultiScraper.apply_structure_downup(x, str_def) for x in node.get_all()]
+        nchanges = sum([x[1] for x in res0])
+        subnodes = [x[0] for x in res0]
+        
+        #create new node with processed subnodes
+        nnode = ScraperNode(node.name(), node.elem(), subnodes)
+
+        #select structure for new node
+        nstr, subnodes_str = MultiScraper.select_structure(nnode, str_def)
+        if nstr is None:
+            return (nnode, nchanges)
+        if (node.name() is None) or (node.name() != nstr):
+            return (ScraperNode(nstr, node.elem(), subnodes_str), 1 + nchanges)
+        return (nnode, nchanges)
+
+    #upper level function: 1) transform into ScraperNode from tuples 2) repeat applying structure untill it stabilizes
+    def induce_structure(node, str_def):
+        cnode = node
+        
+        if type(cnode) is not ScraperNode:
+            cnode = MultiScraper.restructure_data(node)
+        while True:
+            cnode, num = MultiScraper.apply_structure_downup(cnode, str_def)
+            if num == 0:
+                break
+        return cnode
+    
+    #def check_substructure(lst, structure_descr):
+    #    actual = dict(Counter([v.name() for v in lst]))
+    #    #print('test: ', actual, structure_descr)
+    #    if None in actual:
+    #        return False
+    #    if 'other' in structure_descr:
+    #        actual_other = sum([v for (k,v) in actual.items() if k not in structure_descr])
+    #        constr_other = structure_descr['other']
+    #        if actual_other < constr_other[0] or (len(constr_other) > 1 and actual_other > constr_other[1]):
+    #            return False
+    #    res1 = [(k in actual and actual[k] >= v[0] and (len(v) == 1 or actual[k] <= v[1]))
+    #                for (k,v) in structure_descr.items() if k != 'other' and v[0] > 0]
+    #    res2 = [(len(v) == 1 or actual[k] <= v[1]) for (k,v) in structure_descr.items() if k != 'other' and v[0] == 0 and k in actual]
+    #    return all(res1) and all(res2)
+
+    #def induce_structure(node, struct_transform):
+    #    if node[2] == []:
+    #        return ScraperNode(node[1], node[0], [])
+    #    res = [MultiScraper.induce_structure(n, struct_transform) for n in node[2]]
+    #    strhit = [t for (d, t) in struct_transform if MultiScraper.check_substructure(res, d)]
+    #    if len(strhit) > 1:
+    #        raise 'Multiple structures matched!'
+    #    fin = ScraperNode(None, node[0], res)
+    #    if len(strhit) == 1:
+    #        transform = strhit[0]
+    #        if type(transform) is str:
+    #            fin = fin.renamed(transform)
+    #        else:
+    #            #print('applying transform', strhit[0])
+    #            fin = strhit[0](fin)
+    #    return fin
