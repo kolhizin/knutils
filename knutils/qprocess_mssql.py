@@ -93,19 +93,30 @@ def insert_queue_table(con, name, src, pk_name='rid', commit=False):
     else:
         raise Exception('insert_queue_table: unexpected argument')
         
-def popid_queue_table(con, name, pk_name='rid', num=1):
-    cur = con.execute('select top {1} rid from {0} where queue_pid is null order by rid'.format(name, num, pk_name))
+#def popid_queue_table(con, name, pk_name='rid', num=1):
+#    cur = con.execute('select top {1} rid from {0} where queue_pid is null order by rid'.format(name, num, pk_name))
+#    res = cur.fetchall()
+#    if res is None:
+#        con.commit()
+#        return None
+#    
+#    res = [x[0] for x in res]
+#    for rid in res:
+#        cur = con.execute('update {0} set queue_pid = {1}, queue_start_dt = GETDATE() where rid = {2}'.format(name, os.getpid(), rid))
+#    
+#    con.commit()
+#    return res
+
+def popid_queue_table(con, name, num=1):
+    cur = con.execute('''
+        with t as (select top {0} * from {1} where queue_pid is null order by rid)
+        update t set queue_pid = {2}, queue_start_dt = GETDATE() output inserted.rid
+        '''.format(num, name, os.getpid()))
     res = cur.fetchall()
-    if res is None:
-        con.commit()
-        return None
-    
-    res = [x[0] for x in res]
-    for rid in res:
-        cur = con.execute('update {0} set queue_pid = {1}, queue_start_dt = GETDATE() where rid = {2}'.format(name, os.getpid(), rid))
-    
     con.commit()
-    return res
+    if res is None:
+        return None
+    return [x[0] for x in res]
 
 def update_status_queue_table(con, name, rid, status):
     cur = con.execute('select queue_pid from {0} where rid={1}'.format(name, rid))
