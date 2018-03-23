@@ -89,6 +89,7 @@ class QScraper:
             if dropq_if_exist:
                 qp.drop_table(con, q_name, commit=True)
                 need_fill = True
+        
         if need_fill:
             qp.create_queue_table(con, q_name, drop_if_exist=dropq_if_exist)
             qp.insert_queue_table(con, q_name, src_name, pk_name=pk_name, commit=True)
