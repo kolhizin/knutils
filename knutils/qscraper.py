@@ -14,26 +14,33 @@ class QScraper:
     def parse_url(url):
         return html.parse(url)
     
-    def __init__(self, scraper, fn_process, d_dst_tables):
+    def __init__(self, scraper, fn_process, d_dst_schema):
+        std_arg = [
+            {'name':'rid', 'sql_type':'int', 'sql_qual':'identity primary key', 'descr':'row-id'},
+            {'name':'rdt', 'sql_type':'datetime', 'sql_qual':'default GETDATE()', 'descr':'row insert datetime'}
+        ]
         self.__scraper = scraper
         self.__fnproc = fn_process
-        self.__map_tables = {k: d_dst_tables[k][0] for k in d_dst_tables}
-        self.__def_tables = {d_dst_tables[k][0]: {'query': d_dst_tables[k][1]} for k in d_dst_tables}
+        self.__map_tables = {k: d_dst_schema[k][0] for k in d_dst_schema}
+        self.__map_schema = {k: d_dst_schema[k][1] for k in d_dst_schema}
+        self.__def_tables = {d_dst_schema[k][0]:{'query': '({})'.format(qp.make_table_def(std_arg + d_dst_schema[k][1]))}
+                             for k in d_dst_tables}
         
-    def create_tables(self, con, table_lst = None, drop_if_exist = False):
+    def create_entities(self, con, entity_lst = None, drop_if_exist = False):
         if table_lst is None:
             qp.create_table_conditional(con, self.__def_tables, drop_if_exist=drop_if_exist, commit=True)
         elif type(table_lst) is list:
-            qp.create_table_conditional(con, {k:v for (k,v) in self.__def_tables.items() if k in table_lst},
+            qp.create_table_conditional(con, {v:self.__def_tables[v] for (k,v) in self.__map_tables.items() if k in table_lst},
                                         drop_if_exist=drop_if_exist, commit=True)
         else:
             raise Exception('QScraper.create_tables: unsupported agrument type of table_lst')
     
-    def drop_tables(self, con, table_lst = None):
-        if table_lst is None:
+    def drop_entities(self, con, entity_lst = None):
+        if entity_lst is None:
             for k in self.__def_tables:
                 qp.drop_table(con, k)
-        elif type(table_lst) is list:
+        elif type(entity_lst) is list:
+            table_lst = [None if x not in self.__map_tables else self.__map_tables[x] for x in entity_lst]
             for k in self.__def_tables:
                 if k in table_lst:
                     qp.drop_table(con, k)
@@ -41,29 +48,35 @@ class QScraper:
             raise Exception('QScraper.drop_tables: unsupported agrument type of table_lst')
     
     
-    def trunc_tables(self, con, table_lst = None):
-        if table_lst is None:
+    def clear_entities(self, con, entity_lst = None):
+        if entity_lst is None:
             for k in self.__def_tables:
                 con.execute('truncate table {}'.format(k))
             con.commit()
-        elif type(table_lst) is list:
+        elif type(entity_lst) is list:
+            table_lst = [None if x not in self.__map_tables else self.__map_tables[x] for x in entity_lst]
             for k in self.__def_tables:
                 if k in table_lst:
                     con.execute('truncate table {}'.format(k))
             con.commit()
         else:
             raise Exception('QScraper.trunc_tables: unsupported agrument type of table_lst')
-            
+    
+    def entity_table(self, entity):
+        return self.__map_tables[entity]
+    
     def save_result(self, con, d_result):
         if len(self.__def_tables)==1 and (type(d_result) is list or type(d_result) is tuple):
             dst = self.__def_tables.keys()[0]
-            qp.insert_table(con, dst, d_result, commit=True)
+            vals = self.__map_schema.values()[0]
+            qp.insert_table(con, dst, d_result, valnames=[x['name'] for x in vals], commit=True)
         elif type(d_result) is dict:
             for (k, data) in d_result.items():
                 if k not in self.__map_tables:
                     con.rollback()
                     raise Exception('Result destination not in map of destinations of QScraper')
-                qp.insert_table(con, self.__map_tables[k], data, commit=False)
+            
+                qp.insert_table(con, self.__map_tables[k], data, valnames=[x['name'] for x in self.__map_schema[k]], commit=False)
             con.commit()
         else:
             raise Exception('QScraper.save_result: unsupported agrument type of d_result')

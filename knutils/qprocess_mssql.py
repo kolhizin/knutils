@@ -1,6 +1,10 @@
 import pyodbc
 import os
 
+
+def make_table_def(schema):
+    return ', '.join(['{0} {1} {2}'.format(x['name'], x['sql_type'], x['sql_qual'] if 'sql_qual' in x else '').strip() for x in schema])
+
 def get_tables(con, **kwargs):
     cnd = None
     if 'query' in kwargs:
@@ -52,10 +56,13 @@ def drop_table(con, name, commit=True):
     if commit:
         con.commit()
     
-def insert_table(con, name, data, commit=False):
+def insert_table(con, name, data, valnames=None, commit=False):
     if type(data) is tuple:
         ddef = ', '.join(['?']*len(data))
-        con.execute('insert into {0} values ({1})'.format(name, ddef), data)
+        if valnames is not None:
+            con.execute('insert into {0} ({1}) values ({2})'.format(name, ', '.join(valnames), ddef), data)
+        else:
+            con.execute('insert into {0} values ({1})'.format(name, ddef), data)
         if commit:
             con.commit()
     elif type(data) is list:
@@ -69,7 +76,13 @@ def insert_table(con, name, data, commit=False):
             raise Exception('insert_table: expected tuples in list!')
         ddef = ', '.join(['?']*type0[1])
         cur = con.cursor()
-        cur.executemany('insert into {0} values ({1})'.format(name, ddef), data)
+        
+        
+        if valnames is not None:
+            cur.executemany('insert into {0} ({1}) values ({2})'.format(name, ', '.join(valnames), ddef), data)
+        else:
+            cur.executemany('insert into {0} values ({1})'.format(name, ddef), data)
+        
         if commit:
             con.commit()
     else:
@@ -93,19 +106,6 @@ def insert_queue_table(con, name, src, pk_name='rid', commit=False):
     else:
         raise Exception('insert_queue_table: unexpected argument')
         
-#def popid_queue_table(con, name, pk_name='rid', num=1):
-#    cur = con.execute('select top {1} rid from {0} where queue_pid is null order by rid'.format(name, num, pk_name))
-#    res = cur.fetchall()
-#    if res is None:
-#        con.commit()
-#        return None
-#    
-#    res = [x[0] for x in res]
-#    for rid in res:
-#        cur = con.execute('update {0} set queue_pid = {1}, queue_start_dt = GETDATE() where rid = {2}'.format(name, os.getpid(), rid))
-#    
-#    con.commit()
-#    return res
 
 def popid_queue_table(con, name, num=1):
     cur = con.execute('''
