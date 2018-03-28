@@ -77,12 +77,10 @@ def insert_table(con, name, data, valnames=None, commit=False):
         ddef = ', '.join(['?']*type0[1])
         cur = con.cursor()
         
-        
         if valnames is not None:
             cur.executemany('insert into {0} ({1}) values ({2})'.format(name, ', '.join(valnames), ddef), data)
         else:
             cur.executemany('insert into {0} values ({1})'.format(name, ddef), data)
-        
         if commit:
             con.commit()
     else:
