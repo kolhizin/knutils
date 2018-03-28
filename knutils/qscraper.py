@@ -2,14 +2,15 @@ import knutils.qprocess_mssql as qp
 import lxml.html as html
 
 class QScraper:
-    def fetch_url(con, src_table_name, rid, url_name='url', cnt_interval=(0,)):
-        cur = con.execute('select {2} from {0} where rid={1}'.format(src_table_name, rid, url_name))
+    def fetch_url(con, src_table_name, rid, url_name='url', cnt_interval=(0,), args=[]):
+        arg_list = ', '.join([url_name] + args)
+        cur = con.execute('select {2} from {0} where rid={1}'.format(src_table_name, rid, arg_list))
         urls = cur.fetchall()
         if len(cnt_interval) > 1 and len(urls) > cnt_interval[1]:
             raise Exception('fetch_url received more urls than expected!')
         if len(urls) < cnt_interval[0]:
             raise Exception('fetch_url received less urls than expected!')
-        return [x[0] for x in urls]
+        return [x[0] for x in urls], [{k:x[i+1] for (i,k) in enumerate(args)} for x in urls]
     
     def parse_url(url):
         return html.parse(url)
@@ -79,21 +80,21 @@ class QScraper:
         else:
             raise Exception('QScraper.save_result: unsupported agrument type of d_result')
             
-    def process_one(self, con, src_table, rid, fnproc, url_name='url'):
-        urls = QScraper.fetch_url(con, src_table, rid, url_name=url_name, cnt_interval=(0,1))
+    def process_one(self, con, src_table, rid, fnproc, url_name='url', args=[]):
+        urls, arg_vals = QScraper.fetch_url(con, src_table, rid, url_name=url_name, cnt_interval=(0,1), args=args)
         if len(urls) == 0:
             return None
         xroot = QScraper.parse_url(urls[0])
         xres = self.__scraper.parse(xroot)
-        d_res = fnproc(xres, rid)
+        d_res = fnproc(xres, rid, arg_vals[0])
         self.save_result(con, d_res)
         return 0
     
-    def get_processor(self, con, src_table, fnproc, url_name='url'):
-        return lambda x: self.process_one(con, src_table, x, fnproc, url_name=url_name)
+    def get_processor(self, con, src_table, fnproc, url_name='url', args=[]):
+        return lambda x: self.process_one(con, src_table, x, fnproc, url_name=url_name, args=args)
     
     def run_process(self, con, q_name, src_name, log_name, fnproc,
-                    url_name='url', pk_name='rid', dropq_if_exist=False, dropq_on_complete=False):
+                    url_name='url', pk_name='rid', args=[], dropq_if_exist=False, dropq_on_complete=False):
         need_fill = True
         if qp.exist_table(con, table_name=q_name):
             need_fill = False
@@ -106,7 +107,7 @@ class QScraper:
             qp.insert_queue_table(con, q_name, src_name, pk_name=pk_name, commit=True)
             
         while True:
-            res = qp.queue_process(con, q_name, log_name, self.get_processor(con, src_name, fnproc))
+            res = qp.queue_process(con, q_name, log_name, self.get_processor(con, src_name, fnproc, args=args, url_name=url_name))
             if res is None or len(res) == 0:
                 break
         
